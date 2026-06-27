@@ -5,19 +5,19 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 
 private val FlipLockColorScheme = darkColorScheme(
-    primary         = NeonGreen,
-    onPrimary       = BackgroundDeep,
-    secondary       = NeonGreenDim,
-    onSecondary     = BackgroundDeep,
-    background      = BackgroundDeep,
-    onBackground    = TextPrimary,
-    surface         = BackgroundCard,
-    onSurface       = TextPrimary,
-    surfaceVariant  = BackgroundElevated,
+    primary          = ChampagneGold,
+    onPrimary        = ObsidianBlack,
+    secondary        = ChampagneGoldDim,
+    onSecondary      = ObsidianBlack,
+    background       = ObsidianBlack,
+    onBackground     = TextPrimary,
+    surface          = PanelDark,
+    onSurface        = TextPrimary,
+    surfaceVariant   = PanelSurface,
     onSurfaceVariant = TextSecondary,
-    error           = DangerRed,
-    onError         = TextPrimary,
-    outline         = SurfaceOverlay
+    error            = MutedCoral,
+    onError          = TextPrimary,
+    outline          = WireframeLine
 )
 
 @Composable
