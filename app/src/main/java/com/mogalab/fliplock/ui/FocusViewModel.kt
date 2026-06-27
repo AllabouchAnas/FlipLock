@@ -1,6 +1,7 @@
 package com.mogalab.fliplock.ui
 
 import android.app.Application
+import android.content.Context
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.VibrationEffect
@@ -37,7 +38,8 @@ data class FocusUiState(
     val graceCountdownSeconds: Int = 10,
     val isDeviceLocked: Boolean = false,
     val isMuted: Boolean = false,
-    val stats: FocusStats = FocusStats()
+    val stats: FocusStats = FocusStats(),
+    val isSensorTestCompleted: Boolean = false
 ) {
     val formattedTime: String
         get() {
@@ -67,6 +69,68 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val notificationManager = application.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+    private var originalDndFilter: Int? = null
+
+    fun isDndPermissionGranted(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            notificationManager.isNotificationPolicyAccessGranted
+        } else {
+            true
+        }
+    }
+
+    private fun enableDnd() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && isDndPermissionGranted()) {
+            try {
+                originalDndFilter = notificationManager.currentInterruptionFilter
+                notificationManager.setInterruptionFilter(android.app.NotificationManager.INTERRUPTION_FILTER_NONE)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun disableDnd() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && isDndPermissionGranted()) {
+            try {
+                val filterToRestore = originalDndFilter ?: android.app.NotificationManager.INTERRUPTION_FILTER_ALL
+                notificationManager.setInterruptionFilter(filterToRestore)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun vibrateSuccess() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(300, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(300)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun startCalibration() {
+        sensorManager.start()
+    }
+
+    fun stopCalibration() {
+        if (_uiState.value.phase == SessionPhase.IDLE) {
+            sensorManager.stop()
+        }
+    }
+
+    fun completeSensorTest() {
+        viewModelScope.launch {
+            repository.markSensorTestCompleted()
+        }
+    }
+
     private val _uiState = MutableStateFlow(FocusUiState())
     val uiState: StateFlow<FocusUiState> = _uiState.asStateFlow()
 
@@ -80,8 +144,22 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(stats = stats) }
         }.launchIn(viewModelScope)
 
+        // Observe sensor test status
+        repository.isSensorTestCompleted.onEach { completed ->
+            _uiState.update { it.copy(isSensorTestCompleted = completed) }
+        }.launchIn(viewModelScope)
+
         // Observe sensor fusion
+        var hasVibratedForCalibration = false
         sensorManager.isFocusPosition.onEach { isFocusPosition ->
+            if (!_uiState.value.isSensorTestCompleted) {
+                if (isFocusPosition && !hasVibratedForCalibration) {
+                    hasVibratedForCalibration = true
+                    vibrateSuccess()
+                } else if (!isFocusPosition) {
+                    hasVibratedForCalibration = false
+                }
+            }
             handleSensorUpdate(isFocusPosition)
         }.launchIn(viewModelScope)
     }
@@ -90,10 +168,15 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         val currentPhase = _uiState.value.phase
         _uiState.update { it.copy(isDeviceLocked = isLockedPosition) }
 
+        if (!_uiState.value.isSensorTestCompleted) {
+            return
+        }
+
         when {
             // Device moved into focus position while waiting
             isLockedPosition && currentPhase == SessionPhase.WAITING -> {
                 _uiState.update { it.copy(phase = SessionPhase.ACTIVE) }
+                enableDnd()
                 startTimer()
             }
             // Device moved into focus position during grace period — resume
@@ -101,12 +184,14 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
                 stopAlarm()
                 graceJob?.cancel()
                 _uiState.update { it.copy(phase = SessionPhase.ACTIVE, graceCountdownSeconds = 10) }
+                enableDnd()
                 startTimer()
             }
             // Device lifted during active focus — trigger 10s grace period
             !isLockedPosition && currentPhase == SessionPhase.ACTIVE -> {
                 timerJob?.cancel()
                 _uiState.update { it.copy(phase = SessionPhase.BROKEN, graceCountdownSeconds = 10) }
+                disableDnd()
                 startAlarm()
                 startGraceCountdown()
             }
@@ -145,6 +230,7 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         graceJob?.cancel()
         stopAlarm()
         sensorManager.stop()
+        disableDnd()
         _uiState.update { it.copy(phase = SessionPhase.IDLE) }
     }
 
@@ -153,13 +239,15 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         graceJob?.cancel()
         stopAlarm()
         sensorManager.stop()
+        disableDnd()
         val currentDuration = _uiState.value.selectedDurationMinutes
         _uiState.update {
             FocusUiState(
                 selectedDurationMinutes = currentDuration,
                 remainingSeconds = currentDuration * 60,
                 isMuted = it.isMuted,
-                stats = it.stats
+                stats = it.stats,
+                isSensorTestCompleted = it.isSensorTestCompleted
             )
         }
     }
@@ -194,6 +282,7 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         val durationMins = _uiState.value.selectedDurationMinutes.toLong()
         stopAlarm()
         sensorManager.stop()
+        disableDnd()
         _uiState.update { it.copy(phase = SessionPhase.COMPLETED) }
         viewModelScope.launch {
             repository.recordSuccess(durationMins)
@@ -205,6 +294,7 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         val elapsedMins = (elapsed / 60).toLong().coerceAtLeast(1L)
         stopAlarm()
         sensorManager.stop()
+        disableDnd()
         _uiState.update { it.copy(phase = SessionPhase.FAILED) }
         viewModelScope.launch {
             repository.recordFailure(elapsedMins)
@@ -260,5 +350,6 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         graceJob?.cancel()
         stopAlarm()
         sensorManager.stop()
+        disableDnd()
     }
 }

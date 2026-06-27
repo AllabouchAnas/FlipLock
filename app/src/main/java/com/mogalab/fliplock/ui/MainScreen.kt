@@ -1,13 +1,20 @@
 package com.mogalab.fliplock.ui
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -80,7 +87,7 @@ fun MainScreen(
     onToggleMute: () -> Unit,
 ) {
     val bgColor by animateColorAsState(
-        targetValue   = if (uiState.phase == SessionPhase.ACTIVE) FocusBlack else ObsidianBlack,
+        targetValue   = if (!uiState.isSensorTestCompleted) ObsidianBlack else if (uiState.phase == SessionPhase.ACTIVE) FocusBlack else ObsidianBlack,
         animationSpec = tween(600),
         label         = "bg_color"
     )
@@ -89,22 +96,31 @@ fun MainScreen(
             .fillMaxSize()
             .background(bgColor)
     ) {
-        when (uiState.phase) {
-            SessionPhase.IDLE, SessionPhase.WAITING ->
-                IdleOrWaitingContent(
-                    uiState            = uiState,
-                    onDurationSelected = onDurationSelected,
-                    onStartSession     = onStartSession,
-                    onToggleMute       = onToggleMute
-                )
-            SessionPhase.ACTIVE ->
-                ActiveFocusContent(uiState = uiState, onCancel = onCancelSession)
-            SessionPhase.BROKEN ->
-                BrokenSessionContent(uiState = uiState, onCancel = onCancelSession)
-            SessionPhase.COMPLETED ->
-                CompletionContent(uiState = uiState, onReset = onReset)
-            SessionPhase.FAILED ->
-                FailureContent(uiState = uiState, onReset = onReset)
+        if (!uiState.isSensorTestCompleted) {
+            val viewModel: FocusViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+            SensorCalibrationScreen(
+                uiState = uiState,
+                viewModel = viewModel,
+                onComplete = viewModel::completeSensorTest
+            )
+        } else {
+            when (uiState.phase) {
+                SessionPhase.IDLE, SessionPhase.WAITING ->
+                    IdleOrWaitingContent(
+                        uiState            = uiState,
+                        onDurationSelected = onDurationSelected,
+                        onStartSession     = onStartSession,
+                        onToggleMute       = onToggleMute
+                    )
+                SessionPhase.ACTIVE ->
+                    ActiveFocusContent(uiState = uiState, onCancel = onCancelSession)
+                SessionPhase.BROKEN ->
+                    BrokenSessionContent(uiState = uiState, onCancel = onCancelSession)
+                SessionPhase.COMPLETED ->
+                    CompletionContent(uiState = uiState, onReset = onReset)
+                SessionPhase.FAILED ->
+                    FailureContent(uiState = uiState, onReset = onReset)
+            }
         }
     }
 }
@@ -373,12 +389,9 @@ private fun BrokenSessionContent(uiState: FocusUiState, onCancel: () -> Unit) {
                 )
             }
             Spacer(Modifier.height(40.dp))
-            Text(
-                text          = "TAP TO CANCEL",
-                fontSize      = 10.sp,
-                color         = TextTertiary,
-                letterSpacing = 1.5.sp,
-                modifier      = Modifier.clickable { onCancel() }
+            DiscreetLongPressButton(
+                text = "Abandon Session",
+                onTrigger = onCancel
             )
         }
     }
@@ -721,3 +734,308 @@ private fun WireframeCtaButton(label: String, color: Color, onClick: () -> Unit)
         )
     }
 }
+
+// ═════════════════════════════════════════════════════════
+// SENSOR CALIBRATION & DND ONBOARDING SCREEN
+// ═════════════════════════════════════════════════════════
+@Composable
+private fun SensorCalibrationScreen(
+    uiState: FocusUiState,
+    viewModel: FocusViewModel,
+    onComplete: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isDark by viewModel.sensorManager.isDarkFlow.collectAsStateWithLifecycle()
+    val isFaceDown by viewModel.sensorManager.isFaceDownFlow.collectAsStateWithLifecycle()
+
+    DisposableEffect(Unit) {
+        viewModel.startCalibration()
+        onDispose {
+            viewModel.stopCalibration()
+        }
+    }
+
+    var isDndGranted by remember { mutableStateOf(viewModel.isDndPermissionGranted()) }
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                isDndGranted = viewModel.isDndPermissionGranted()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    var hasPassedSensorTest by remember { mutableStateOf(false) }
+    LaunchedEffect(isDark, isFaceDown) {
+        if (isDark && isFaceDown) {
+            hasPassedSensorTest = true
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 24.dp, end = 24.dp, top = 56.dp, bottom = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text          = "CALIBRATION",
+            fontSize      = 12.sp,
+            color         = ChampagneGold,
+            fontWeight    = FontWeight.Medium,
+            letterSpacing = 3.sp
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text          = "HARDWARE INTEGRITY TEST",
+            fontSize      = 11.sp,
+            color         = TextSecondary,
+            letterSpacing = 1.5.sp
+        )
+
+        Spacer(Modifier.weight(1f))
+
+        // Concentric rings visual
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier         = Modifier.size(240.dp)
+        ) {
+            ConcentricRings(modifier = Modifier.fillMaxSize())
+            if (hasPassedSensorTest) {
+                Text(
+                    text       = "✓ VERIFIED",
+                    fontSize   = 20.sp,
+                    color      = ChampagneGold,
+                    fontWeight = FontWeight.Light,
+                    letterSpacing = 2.sp
+                )
+            } else {
+                Text(
+                    text       = "FLIP PHONE",
+                    fontSize   = 16.sp,
+                    color      = TextSecondary.copy(alpha = 0.5f),
+                    fontWeight = FontWeight.ExtraLight,
+                    letterSpacing = 2.sp
+                )
+            }
+        }
+
+        Spacer(Modifier.weight(1f))
+
+        // DND Permission Card
+        Card(
+            modifier  = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            shape     = RoundedCornerShape(16.dp),
+            colors    = CardDefaults.cardColors(containerColor = PanelDark)
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (isDndGranted) "✓" else "○",
+                    color = if (isDndGranted) ChampagneGold else MutedCoral,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.width(28.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Do Not Disturb Access",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = "Required to block calls and alerts during focus.",
+                        fontSize = 11.sp,
+                        color = TextSecondary
+                    )
+                }
+                if (!isDndGranted) {
+                    Box(
+                        modifier = Modifier
+                            .border(1.dp, ChampagneGold, RoundedCornerShape(8.dp))
+                            .clickable {
+                                try {
+                                    val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+                            }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "GRANT",
+                            fontSize = 10.sp,
+                            color = ChampagneGold,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        // Sensor test Card
+        Card(
+            modifier  = Modifier.fillMaxWidth().padding(bottom = 24.dp),
+            shape     = RoundedCornerShape(16.dp),
+            colors    = CardDefaults.cardColors(containerColor = PanelDark)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (hasPassedSensorTest) "✓" else "○",
+                        color = if (hasPassedSensorTest) ChampagneGold else TextSecondary,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(28.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "Sensor Alignment Test",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = "Lay phone face-down on a flat surface to test.",
+                            fontSize = 11.sp,
+                            color = TextSecondary
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceAround
+                ) {
+                    SensorIndicator(label = "Proximity (Dark)", isActive = isDark)
+                    SensorIndicator(label = "Accelerometer (Flat)", isActive = isFaceDown)
+                }
+            }
+        }
+
+        // Activate button
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .border(
+                    1.dp,
+                    if (hasPassedSensorTest) ChampagneGold else WireframeLine,
+                    RoundedCornerShape(14.dp)
+                )
+                .background(if (hasPassedSensorTest) ChampagneGold.copy(alpha = 0.05f) else Color.Transparent)
+                .clickable(enabled = hasPassedSensorTest) {
+                    onComplete()
+                }
+        ) {
+            Text(
+                text          = "ACTIVATE FLIPLOCK",
+                fontSize      = 13.sp,
+                fontWeight    = FontWeight.Medium,
+                color         = if (hasPassedSensorTest) ChampagneGold else TextTertiary,
+                letterSpacing = 2.5.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun SensorIndicator(label: String, isActive: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(if (isActive) ChampagneGold else TextTertiary)
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            color = if (isActive) TextPrimary else TextSecondary
+        )
+    }
+}
+
+// ═════════════════════════════════════════════════════════
+// DISCREET LONG-PRESS ABANDON BUTTON
+// ═════════════════════════════════════════════════════════
+@Composable
+private fun DiscreetLongPressButton(
+    text: String,
+    onTrigger: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isPressing by remember { mutableStateOf(false) }
+
+    val progress by animateFloatAsState(
+        targetValue = if (isPressing) 1f else 0f,
+        animationSpec = if (isPressing) {
+            tween(durationMillis = 2000, easing = LinearEasing)
+        } else {
+            tween(durationMillis = 150)
+        },
+        label = "progress"
+    )
+
+    // Trigger action when progress reaches 1.0
+    LaunchedEffect(progress) {
+        if (progress >= 1.0f && isPressing) {
+            isPressing = false
+            onTrigger()
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        isPressing = true
+                        try {
+                            awaitRelease()
+                        } finally {
+                            isPressing = false
+                        }
+                    }
+                )
+            }
+            .padding(12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text          = text,
+                fontSize      = 11.sp,
+                color         = TextSecondary.copy(alpha = 0.8f),
+                letterSpacing = 2.sp,
+                fontWeight    = FontWeight.Light
+            )
+            Spacer(Modifier.height(6.dp))
+            // Progress bar
+            Box(
+                modifier = Modifier
+                    .width(120.dp)
+                    .height(2.dp)
+                    .background(Color.White.copy(alpha = 0.1f))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(progress)
+                        .background(MutedCoral)
+                   )
+               }
+           }
+       }
+   }

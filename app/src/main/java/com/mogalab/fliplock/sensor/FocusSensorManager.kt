@@ -25,6 +25,12 @@ class FocusSensorManager(context: Context) : SensorEventListener {
     private val _isFocusPositionFlow = MutableStateFlow(false)
     val isFocusPosition: StateFlow<Boolean> = _isFocusPositionFlow.asStateFlow()
 
+    private val _isDarkFlow = MutableStateFlow(false)
+    val isDarkFlow: StateFlow<Boolean> = _isDarkFlow.asStateFlow()
+
+    private val _isFaceDownFlow = MutableStateFlow(false)
+    val isFaceDownFlow: StateFlow<Boolean> = _isFaceDownFlow.asStateFlow()
+
     fun start() {
         proximitySensor?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
@@ -39,6 +45,8 @@ class FocusSensorManager(context: Context) : SensorEventListener {
         isDark = false
         isFaceDown = false
         _isFocusPositionFlow.value = false
+        _isDarkFlow.value = false
+        _isFaceDownFlow.value = false
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -46,10 +54,12 @@ class FocusSensorManager(context: Context) : SensorEventListener {
             Sensor.TYPE_PROXIMITY -> {
                 val maxRange = proximitySensor?.maximumRange ?: 1f
                 isDark = event.values[0] < maxRange
+                _isDarkFlow.value = isDark
             }
             Sensor.TYPE_ACCELEROMETER -> {
                 // When face-down flat on a surface, gravity acts on Z axis as ~-9.8 m/s²
                 isFaceDown = event.values[2] < -9.0f
+                _isFaceDownFlow.value = isFaceDown
             }
         }
         _isFocusPositionFlow.value = isDark && isFaceDown
