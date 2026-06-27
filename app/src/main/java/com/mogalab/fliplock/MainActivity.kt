@@ -6,6 +6,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mogalab.fliplock.ui.FocusViewModel
@@ -17,7 +20,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Full-screen immersive: hide status bar and navigation bar
         enableEdgeToEdge()
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
 
         setContent {
             FlipLockTheme {
@@ -37,14 +48,10 @@ class MainActivity : ComponentActivity() {
                     onDurationSelected = viewModel::selectDuration,
                     onStartSession     = viewModel::startSession,
                     onCancelSession    = viewModel::cancelSession,
-                    onReset            = viewModel::resetToIdle
+                    onReset            = viewModel::resetToIdle,
+                    onToggleMute       = viewModel::toggleMute
                 )
             }
         }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        // Keep sensors registered — ViewModel lifecycle handles them
     }
 }

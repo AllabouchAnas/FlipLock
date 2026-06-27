@@ -2,6 +2,10 @@ package com.mogalab.fliplock.ui
 
 import android.app.Application
 import android.media.RingtoneManager
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mogalab.fliplock.data.FocusPreferencesRepository
@@ -21,7 +25,7 @@ enum class SessionPhase {
     IDLE,       // Waiting to start
     WAITING,    // Session started, waiting for device flip
     ACTIVE,     // Device is face-down: focus mode
-    BROKEN,     // Device lifted: 5-second grace period countdown
+    BROKEN,     // Device lifted: 10-second grace period countdown
     COMPLETED,  // Session finished successfully
     FAILED      // Session failed (grace period expired)
 }
@@ -30,8 +34,9 @@ data class FocusUiState(
     val phase: SessionPhase = SessionPhase.IDLE,
     val selectedDurationMinutes: Int = 25,
     val remainingSeconds: Int = 25 * 60,
-    val graceCountdownSeconds: Int = 5,
+    val graceCountdownSeconds: Int = 10,
     val isDeviceLocked: Boolean = false,
+    val isMuted: Boolean = false,
     val stats: FocusStats = FocusStats()
 ) {
     val formattedTime: String
@@ -51,6 +56,16 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
 
     val sensorManager = FocusSensorManager(application)
     private val repository = FocusPreferencesRepository(application)
+
+    private val vibrator: Vibrator by lazy {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vm = application.getSystemService(VibratorManager::class.java)
+            vm.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            application.getSystemService(Vibrator::class.java)!!
+        }
+    }
 
     private val _uiState = MutableStateFlow(FocusUiState())
     val uiState: StateFlow<FocusUiState> = _uiState.asStateFlow()
@@ -85,13 +100,13 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
             isLockedPosition && currentPhase == SessionPhase.BROKEN -> {
                 stopAlarm()
                 graceJob?.cancel()
-                _uiState.update { it.copy(phase = SessionPhase.ACTIVE, graceCountdownSeconds = 5) }
+                _uiState.update { it.copy(phase = SessionPhase.ACTIVE, graceCountdownSeconds = 10) }
                 startTimer()
             }
-            // Device lifted during active focus — trigger grace period
+            // Device lifted during active focus — trigger 10s grace period
             !isLockedPosition && currentPhase == SessionPhase.ACTIVE -> {
                 timerJob?.cancel()
-                _uiState.update { it.copy(phase = SessionPhase.BROKEN) }
+                _uiState.update { it.copy(phase = SessionPhase.BROKEN, graceCountdownSeconds = 10) }
                 startAlarm()
                 startGraceCountdown()
             }
@@ -109,12 +124,16 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun toggleMute() {
+        _uiState.update { it.copy(isMuted = !it.isMuted) }
+    }
+
     fun startSession() {
         _uiState.update {
             it.copy(
                 phase = SessionPhase.WAITING,
                 remainingSeconds = it.selectedDurationMinutes * 60,
-                graceCountdownSeconds = 5,
+                graceCountdownSeconds = 10,
                 isDeviceLocked = false
             )
         }
@@ -139,6 +158,7 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
             FocusUiState(
                 selectedDurationMinutes = currentDuration,
                 remainingSeconds = currentDuration * 60,
+                isMuted = it.isMuted,
                 stats = it.stats
             )
         }
@@ -159,9 +179,9 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
     private fun startGraceCountdown() {
         graceJob?.cancel()
         graceJob = viewModelScope.launch {
-            repeat(5) { tick ->
+            repeat(10) { tick ->
                 delay(1000L)
-                val remaining = 4 - tick
+                val remaining = 9 - tick
                 _uiState.update { it.copy(graceCountdownSeconds = remaining) }
                 if (remaining <= 0) {
                     onSessionFailed()
@@ -192,17 +212,40 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startAlarm() {
+        val isMuted = _uiState.value.isMuted
+
+        // Always vibrate — repeating alarm pattern
         try {
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            ringtone = RingtoneManager.getRingtone(getApplication(), uri)
-            ringtone?.play()
+            val pattern = longArrayOf(0, 500, 200, 500, 200, 500)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createWaveform(pattern, 0))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(pattern, 0)
+            }
         } catch (e: Exception) {
             e.printStackTrace()
+        }
+
+        // Play ringtone only when not muted
+        if (!isMuted) {
+            try {
+                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                ringtone = RingtoneManager.getRingtone(getApplication(), uri)
+                ringtone?.play()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
     private fun stopAlarm() {
+        try {
+            vibrator.cancel()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         try {
             ringtone?.stop()
         } catch (e: Exception) {

@@ -24,14 +24,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -69,6 +77,7 @@ fun MainScreen(
     onStartSession: () -> Unit,
     onCancelSession: () -> Unit,
     onReset: () -> Unit,
+    onToggleMute: () -> Unit,
 ) {
     val bgColor by animateColorAsState(
         targetValue = when (uiState.phase) {
@@ -90,7 +99,8 @@ fun MainScreen(
                 IdleOrWaitingContent(
                     uiState = uiState,
                     onDurationSelected = onDurationSelected,
-                    onStartSession = onStartSession
+                    onStartSession = onStartSession,
+                    onToggleMute = onToggleMute
                 )
             }
             SessionPhase.ACTIVE -> {
@@ -116,7 +126,8 @@ fun MainScreen(
 private fun IdleOrWaitingContent(
     uiState: FocusUiState,
     onDurationSelected: (Int) -> Unit,
-    onStartSession: () -> Unit
+    onStartSession: () -> Unit,
+    onToggleMute: () -> Unit
 ) {
     val isWaiting = uiState.phase == SessionPhase.WAITING
 
@@ -126,11 +137,18 @@ private fun IdleOrWaitingContent(
             .padding(horizontal = 24.dp, vertical = 48.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // ── Status chip
-        StatusChip(
-            text = if (isWaiting) "FLIP DEVICE FACE-DOWN" else "READY TO FOCUS",
-            color = if (isWaiting) NeonGreen else TextSecondary
-        )
+        // ── Top bar: status chip + mute toggle
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StatusChip(
+                text = if (isWaiting) "FLIP DEVICE FACE-DOWN" else "READY TO FOCUS",
+                color = if (isWaiting) NeonGreen else TextSecondary
+            )
+            MuteToggleButton(isMuted = uiState.isMuted, onToggle = onToggleMute)
+        }
 
         Spacer(Modifier.weight(1f))
 
@@ -173,14 +191,67 @@ private fun IdleOrWaitingContent(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 if (!isWaiting) {
-                    // Duration presets
                     Text(
-                        text = "SELECT DURATION",
+                        text = "SET DURATION",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
                         letterSpacing = 1.5.sp
                     )
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(Modifier.height(12.dp))
+
+                    // ── Custom duration text field
+                    var durationText by remember { mutableStateOf(uiState.selectedDurationMinutes.toString()) }
+                    LaunchedEffect(uiState.selectedDurationMinutes) {
+                        durationText = uiState.selectedDurationMinutes.toString()
+                    }
+                    OutlinedTextField(
+                        value = durationText,
+                        onValueChange = { text ->
+                            // Allow empty while typing, but only commit valid values
+                            if (text.length <= 4) {
+                                durationText = text.filter { it.isDigit() }
+                                durationText.toIntOrNull()?.let { mins ->
+                                    if (mins in 1..999) onDurationSelected(mins)
+                                }
+                            }
+                        },
+                        label = { Text("Duration") },
+                        trailingIcon = {
+                            Text(
+                                "min",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = TextSecondary
+                            )
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = NeonGreen,
+                            unfocusedBorderColor = TextMuted.copy(alpha = 0.4f),
+                            focusedLabelColor = NeonGreen,
+                            unfocusedLabelColor = TextSecondary,
+                            cursorColor = NeonGreen,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            unfocusedContainerColor = BackgroundElevated,
+                            focusedContainerColor = BackgroundElevated
+                        ),
+                        textStyle = MaterialTheme.typography.displayMedium.copy(
+                            textAlign = TextAlign.Center,
+                            fontSize = 32.sp
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = "SUGGESTIONS",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextMuted,
+                        letterSpacing = 1.5.sp
+                    )
+                    Spacer(Modifier.height(8.dp))
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.fillMaxWidth()
@@ -189,12 +260,15 @@ private fun IdleOrWaitingContent(
                             DurationChip(
                                 minutes = mins,
                                 isSelected = uiState.selectedDurationMinutes == mins,
-                                onClick = { onDurationSelected(mins) },
+                                onClick = {
+                                    durationText = mins.toString()
+                                    onDurationSelected(mins)
+                                },
                                 modifier = Modifier.weight(1f)
                             )
                         }
                     }
-                    Spacer(Modifier.height(24.dp))
+                    Spacer(Modifier.height(20.dp))
                 } else {
                     Text(
                         text = "Place your phone screen-down on a flat surface to begin.",
@@ -624,6 +698,26 @@ private fun StatItem(label: String, value: String, color: Color) {
             style = MaterialTheme.typography.bodySmall,
             color = TextMuted,
             letterSpacing = 1.sp
+        )
+    }
+}
+
+@Composable
+private fun MuteToggleButton(isMuted: Boolean, onToggle: () -> Unit) {
+    val bgColor   = if (isMuted) DangerRed.copy(alpha = 0.15f) else NeonGreenAlpha
+    val border    = if (isMuted) DangerRed.copy(alpha = 0.45f) else NeonGreen.copy(alpha = 0.45f)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(bgColor)
+            .border(1.dp, border, CircleShape)
+            .clickable { onToggle() }
+    ) {
+        Text(
+            text     = if (isMuted) "🔕" else "🔔",
+            fontSize = 20.sp
         )
     }
 }
